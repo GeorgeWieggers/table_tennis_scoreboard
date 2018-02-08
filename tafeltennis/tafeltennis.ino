@@ -5,63 +5,105 @@
 //#include <LowPower.h>
 #include <Fsm.h>
 
-
-#define BTN_SCORE_LINKS 8
-#define BTN_SET_LINKS 9
-#define BTN_SET_RECHTS 10
-#define BTN_SCORE_RECHTS 11
+// hardware events
+#define BTN_SCORE_LEFT 8
+#define BTN_SET_LEFT 9
+#define BTN_SET_RIGHT 10
+#define BTN_SCORE_RIGHT 11
 #define BTN_CANCEL 12
 #define BTN_OK 13
 
-#define EVT_NEXT_SET 0x40
-#define EVT_CONTINUE_SET 0x41
-#define EVT_MATCH_COMPLETE 0x42
-#define EVT_CHANGE_SIDES 0x43
-
-#define BTN_LONGPRESS 0x10
-#define BTN_SCORE_LINKS_LONGPRESS (BTN_LONGPRESS | BTN_SCORE_LINKS)
-#define BTN_SET_LINKS_LONGPRESS (BTN_LONGPRESS | BTN_SET_LINKS)
-#define BTN_SET_RECHTS_LONGPRESS (BTN_LONGPRESS | BTN_SET_RECHTSCORE_LINKS)
-#define BTN_SCORE_RECHTS_LONGPRESS (BTN_LONGPRESS | BTN_SCORE_RECHTS)
+// longpress mask
+#define BTN_LONGPRESS 0x20
+#define BTN_SCORE_LEFT_LONGPRESS (BTN_LONGPRESS | BTN_SCORE_LEFT)
+#define BTN_SET_LEFT_LONGPRESS (BTN_LONGPRESS | BTN_SET_LEFT)
+#define BTN_SET_RIGHT_LONGPRESS (BTN_LONGPRESS | BTN_SET_RIGHT)
+#define BTN_SCORE_RIGHT_LONGPRESS (BTN_LONGPRESS | BTN_SCORE_RIGHT)
 #define BTN_CANCEL_LONGPRESS (BTN_LONGPRESS | BTN_CANCEL)
 #define BTN_OK_LONGPRESS (BTN_LONGPRESS | BTN_OK)
 
-uint8_t DIGITAL_SWITCH_PINS[] = 
-{ 
-  BTN_SCORE_LINKS, 
-  BTN_SET_LINKS, 
-  BTN_SET_RECHTS, 
-  BTN_SCORE_RECHTS, 
-  BTN_CANCEL, 
-  BTN_OK 
+// software events, triggered from within "match_rules" state
+#define EVT_NEXT_SET 0x40
+#define EVT_CONTINUE_SET 0x41
+#define EVT_MATCH_COMPLETE 0x42
+#define EVT_SWAP_SIDES 0x43
+
+uint8_t DIGITAL_SWITCH_PINS[] =
+{
+  BTN_SCORE_LEFT,
+  BTN_SET_LEFT,
+  BTN_SET_RIGHT,
+  BTN_SCORE_RIGHT,
+  BTN_CANCEL,
+  BTN_OK
 };
 
 MD_UISwitch_Digital DebouncedSwitches(DIGITAL_SWITCH_PINS, ARRAY_SIZE(DIGITAL_SWITCH_PINS), LOW);
-LiquidCrystal_I2C lcd(0x27,2,16);
+LiquidCrystal_I2C lcd(0x27, 2, 16);
 HT1632_LedMatrix led = HT1632_LedMatrix();
 
 typedef struct {
-  uint8_t score_links;
-  uint8_t set_links;
-  uint8_t set_rechts;
-  uint8_t score_rechts;
-  bool opslag_bijhouden;
-  bool links_is_begonnen;
-  bool opslag_links;
-} score_t;
+  uint8_t score;
+  uint8_t sets;
+  bool serves;
+  bool started_match;
+} player_t;
 
-score_t score;
+typedef struct {
+  player_t left;
+  player_t right;
+  bool log_serve;
+  bool swapped_during_final_set;
+} match_t;
+
+match_t match;
+
+#define MAX_UNDO 5
+match_t undo_buffer[MAX_UNDO];
+uint8_t undo_index;
 
 char buffer[20];
-char* msg = "Test";
-uint8_t crtPos = 0;
-int msgx = 1;
+
+void drop_first_undo()
+{
+  for (uint8_t i = 0; i < undo_index - 1; ++i)
+  {
+    undo_buffer[i] = undo_buffer[i + 1];
+  }
+  --undo_index;
+  Serial.print("drop_first_undo, index is now: ");
+  Serial.println(undo_index);
+}
+
+void push_undo()
+{
+  if (undo_index >= MAX_UNDO) {
+    drop_first_undo();
+  }
+  undo_buffer[undo_index] = match;
+  ++undo_index;
+  Serial.print("push_undo, index is now: ");
+  Serial.println(undo_index);
+}
+
+void pop_undo()
+{
+  if (undo_index > 0) {
+    --undo_index;
+    match = undo_buffer[undo_index];
+  }
+  Serial.print("pop_undo, index is now: ");
+  Serial.println(undo_index);
+}
 
 void new_match()
 {
-  score.score_links = score.set_links = score.set_rechts = score.score_rechts = 0;
-  score.opslag_bijhouden = true;
-  score.links_is_begonnen = true;
+  match.left.score = match.left.sets = match.right.sets = match.right.score = 0;
+  match.log_serve = true;
+  match.left.started_match = true;
+  match.swapped_during_final_set = false;
+
+  undo_index = 0;
 }
 
 State state_new_match(&new_match, NULL, NULL);
@@ -70,49 +112,52 @@ Fsm fsm(&state_new_match);
 void ask_toss()
 {
   lcd.clear();
-  lcd.print("Auto toss?");  
-  lcd.setCursor(0,1);
+  lcd.print("Auto toss?");
+  lcd.setCursor(0, 1);
   lcd.print("             x ");
   lcd.write(byte(0));
+  led.clear();
+  led.putString(0, 0, "Toss...");
 }
 
 void manual_toss()
 {
   lcd.clear();
   lcd.print("Wie slaat op?");
-  lcd.setCursor(0,1);
-  lcd.print("<       >       ");
+  lcd.setCursor(0, 1);
+  lcd.print("<       >");
 }
 
-void manual_toss_speler_links()
+void manual_toss_player_links()
 {
-  score.links_is_begonnen = true;
+  match.left.started_match = true;
   new_set();
 }
 
-void manual_toss_speler_rechts()
+void manual_toss_player_rechts()
 {
-  score.links_is_begonnen = false;
+  match.left.started_match = false;
   new_set();
 }
 
-void auto_toss()
+void auto_toss_random_player()
 {
   lcd.clear();
   lcd.print("Auto toss.....");
-  lcd.setCursor(0,1);
+  lcd.setCursor(0, 1);
   lcd.print("* Een moment");
   for (uint8_t i = 0; i < 20; ++i)
   {
-    lcd.setCursor(0,1);
-    lcd.print(i%2 == 0 ? " ": "*");
-    lcd.setCursor(15,1);
-    lcd.print(i%2 == 0 ? "*": " ");
+    lcd.setCursor(0, 1);
+    lcd.print(i % 2 == 0 ? " " : "*");
+    lcd.setCursor(15, 1);
+    lcd.print(i % 2 == 0 ? "*" : " ");
     delay(100);
   }
   lcd.clear();
   delay(500);
-  score.links_is_begonnen = random(0, 2) == 0;
+
+  match.left.started_match = random(0, 2) == 0;
   new_set();
 }
 
@@ -120,26 +165,48 @@ void print_score_lcd()
 {
   lcd.clear();
   lcd.home();
-  sprintf(buffer, "%c %2d-%-2d %c  (%d-%d)", score.opslag_links ? '*':' ', score.score_links, score.score_rechts, score.opslag_links ? ' ':'*', score.set_links, score.set_rechts);
+  sprintf(buffer, "%c %2d-%-2d %c  (%d-%d)", match.left.serves ? '*' : ' ', match.left.score, match.right.score, match.left.serves ? ' ' : '*', match.left.sets, match.right.sets);
   lcd.print(buffer);
-  lcd.setCursor(0,1);
-  lcd.print("+       +       ");
+  lcd.setCursor(0, 1);
+  lcd.print("+       +    ");
+  if (undo_index > 0) {
+    lcd.print("<");
+  }
 }
 
 void print_score_led()
 {
   led.clear();
-  sprintf(buffer, "%c%02d-%02d%c", score.opslag_links ? ' ':'\'', score.score_rechts, score.score_links, score.opslag_links ? '\'':' ');
-  led.putString(0,0,buffer);
-  sprintf(buffer, "(%d-%d)", score.set_rechts, score.set_links);
-  led.putString(5,8,buffer);
+
+  buffer[0] = match.left.serves ? ' ' : '\'';
+  led.putChar(0, 0, buffer[0]);
+
+  sprintf(buffer, "%2d-%-2d", match.right.score, match.left.score);
+  led.putString(3, 0, buffer);
+
+  buffer[0] = match.left.serves ? '\'' : ' ';
+  led.putChar(30, 0, buffer[0]);
+
+  buffer[0] = match.left.serves ? ' ' : '\'';
+  led.putChar(0, 8, buffer[0]);
+
+  sprintf(buffer, "(%d-%d)", match.right.sets, match.left.sets);
+  led.putString(4, 8, buffer);
+
+  buffer[0] = match.left.serves ? '\'' : ' ';
+  led.putChar(30, 8, buffer[0]);
 }
 
 void new_set()
 {
-  score.score_links = 0;
-  score.score_rechts = 0;
-  score.opslag_links = score.links_is_begonnen;  
+  match.left.score = 0;
+  match.right.score = 0;
+  match.left.serves = match.left.started_match;
+}
+
+void undo()
+{
+  pop_undo();
 }
 
 void during_set()
@@ -148,71 +215,77 @@ void during_set()
   print_score_led();
 }
 
-void score_links()
+void score_left()
 {
-  ++ score.score_links;
+  ++ match.left.score;
 }
 
-void score_rechts()
+void score_right()
 {
-  ++ score.score_rechts;  
+  ++ match.right.score;
 }
 
-bool wisselt_opslag() {
-  uint8_t som = score.score_links + score.score_rechts;
-  return (som < 20 && som %2 == 0) || som >=20;
+bool is_serve_changing() {
+  uint8_t som = match.left.score + match.right.score;
+  return (som < 20 && som % 2 == 0) || som >= 20;
 }
 
-bool set_gewonnen(uint8_t eerste, uint8_t tweede)
+bool did_player_win_set(player_t *check, player_t *other)
 {
-  return (eerste >= 11 && (eerste - tweede >= 2));
+  return (check->score >= 11 && (check->score - other->score >= 2));
 }
 
 bool is_match_complete()
 {
-  return (score.set_links == 3 || score.set_rechts == 3);
+  return (match.left.sets == 3 || match.right.sets == 3);
 }
 
-void wissel_van_kant() {
-  uint8_t tmp_score = score.score_links;
-  uint8_t tmp_set = score.set_links;
-
-  score.score_links = score.score_rechts;
-  score.set_links = score.set_rechts;
-
-  score.score_rechts = tmp_score;
-  score.set_rechts = tmp_set;
-
-  score.opslag_links = !score.opslag_links;
-}
-
-void check_spelregels()
+bool swap_sides_during_final_set()
 {
-  bool setScoreChanged = false;
+  uint8_t som_sets = match.left.sets + match.right.sets;
+  return (match.swapped_during_final_set == false && som_sets == 4
+          && (   (match.left.score == 5 && match.right.score < 5)
+                 || (match.left.score < 5 && match.right.score == 5)));
+}
 
-  if (wisselt_opslag()) {
-    score.opslag_links = !score.opslag_links;
+void swap_scores() {
+  player_t tmp = match.left;
+  match.left = match.right;
+  match.right = tmp;
+}
+
+void check_match_rules()
+{
+  bool set_score_changed = false;
+
+  if (is_serve_changing()) {
+    match.left.serves = !match.left.serves;
+    match.right.serves = !match.right.serves;
   }
-  
-  if (set_gewonnen(score.score_links, score.score_rechts)) {
-    ++score.set_links;
-    setScoreChanged = true;
+
+  if (did_player_win_set(&match.left, &match.right)) {
+    ++match.left.sets;
+    set_score_changed = true;
   }
-  else if (set_gewonnen(score.score_rechts, score.score_links)) {
-    ++score.set_rechts;
-    setScoreChanged = true;
+  else if (did_player_win_set(&match.right, &match.left)) {
+    ++match.right.sets;
+    set_score_changed = true;
   }
-  
-  if (setScoreChanged) {
+
+  if (swap_sides_during_final_set()) {
+    match.swapped_during_final_set = true;
+    fsm.trigger(EVT_SWAP_SIDES);
+  }
+  else if (set_score_changed) {
     if (is_match_complete()) {
       fsm.trigger(EVT_MATCH_COMPLETE);
     } else {
-      fsm.trigger(EVT_NEXT_SET);    
+      fsm.trigger(EVT_NEXT_SET);
     }
   }
   else {
     fsm.trigger(EVT_CONTINUE_SET);
-  }  
+  }
 }
 
 void match_complete()
@@ -220,9 +293,9 @@ void match_complete()
   print_score_lcd();
   print_score_led();
 
-  lcd.setCursor(0,1);
-  lcd.print("Eindstand      ");
-  lcd.write(byte(0));  
+  lcd.setCursor(0, 1);
+  lcd.print("Eindstand    < ");
+  lcd.write(byte(0));
 }
 
 void confirm_new_set()
@@ -230,14 +303,13 @@ void confirm_new_set()
   print_score_lcd();
   print_score_led();
 
-  lcd.setCursor(0,1);
-  lcd.print("Setstand       ");
-  lcd.write(byte(0));  
+  lcd.setCursor(0, 1);
+  lcd.print("Setstand     < ");
+  lcd.write(byte(0));
 }
 
 void confirm_new_set_after()
 {
-  wissel_van_kant();
   new_set();
 }
 
@@ -245,31 +317,44 @@ void confirm_new_match()
 {
   lcd.clear();
   lcd.home();
-  lcd.print("Nieuw spel?");      
-  lcd.setCursor(0,1);
+  lcd.print("Nieuw spel?");
+  lcd.setCursor(0, 1);
   lcd.print("             x ");
   lcd.write(byte(0));
 }
 
-void change_sides()
+void swap_sides()
 {
-  
+  swap_scores();
+
+  lcd.clear();
+  lcd.home();
+  lcd.print("Wissel van");
+  lcd.setCursor(0, 1);
+  lcd.print("speelhelft   < ");
+  lcd.write(byte(0));
+
+  led.clear();
+  led.putString(0, 0, "Wissel..");
+  led.putString(0, 8, "<<  >>");
 }
 
 // State::State(void (*on_enter)(), void (*on_state)(), void (*on_exit)())
-State state_ask_toss(&ask_toss, NULL, NULL);
-State state_auto_toss(&auto_toss, NULL, NULL);
-State state_manual_toss(&manual_toss, NULL, NULL);
-State state_manual_toss_speler_links(&manual_toss_speler_links, NULL, NULL);
-State state_manual_toss_speler_rechts(&manual_toss_speler_rechts, NULL, NULL);
-State state_during_set(&during_set, NULL, NULL);
-State state_score_links(&score_links, NULL, NULL);
-State state_score_rechts(&score_rechts, NULL, NULL);
-State state_confirm_new_set(&confirm_new_set, NULL, &confirm_new_set_after);
-State state_match_complete(&match_complete, NULL, NULL);
-State state_check_spelregels(NULL, &check_spelregels, NULL);
-State state_change_sides(&change_sides, NULL, NULL);
-State state_confirm_new_match(&confirm_new_match, NULL, NULL);
+State state_ask_toss					(&ask_toss,						NULL, NULL);
+State state_auto_toss_random_player		(&auto_toss_random_player,		NULL, NULL);
+State state_manual_toss					(&manual_toss,					NULL, NULL);
+State state_manual_toss_player_links	(&manual_toss_player_links,		NULL, NULL);
+State state_manual_toss_player_rechts	(&manual_toss_player_rechts,	NULL, NULL);
+State state_during_set					(&during_set,					NULL, NULL);
+State state_undo                (&undo,               NULL, NULL);
+State state_score_left					(&score_left,					NULL, NULL);
+State state_score_right					(&score_right,					NULL, NULL);
+State state_confirm_new_set				(&confirm_new_set,				NULL, &confirm_new_set_after);
+State state_match_complete				(&match_complete,				NULL, NULL);
+State state_check_match_rules			(NULL,							&check_match_rules, NULL);
+State state_swap_sides					(&swap_sides,					NULL, NULL);
+State state_confirm_new_match			(&confirm_new_match,			NULL, NULL);
+
 
 byte checkChar[8] = {
   B00000,
@@ -281,7 +366,6 @@ byte checkChar[8] = {
   B00100,
 };
 
-
 void setup()
 {
   Serial.begin(115200);
@@ -290,46 +374,53 @@ void setup()
   lcd.clear();
   lcd.createChar(0, checkChar);
 
-  led.init(1,2);
-  led.clear();  
+  led.init(1, 2);
+  led.clear();
   led.setBrightness(15);
 
   DebouncedSwitches.begin();
   DebouncedSwitches.enableRepeat(false);
   DebouncedSwitches.enableRepeatResult(false);
-  DebouncedSwitches.enableDoublePress(false);
-  //DebouncedSwitches.setDoublePressTime(200);
+  DebouncedSwitches.enableDoublePress(true);
+  DebouncedSwitches.setDoublePressTime(400);
   DebouncedSwitches.enableLongPress(true);
   DebouncedSwitches.setLongPressTime(750);
 
   fsm.add_timed_transition(&state_new_match, &state_ask_toss, 0, NULL);
-  fsm.add_transition(&state_ask_toss, &state_auto_toss, BTN_OK, NULL);
+
+  fsm.add_transition(&state_ask_toss, &state_auto_toss_random_player, BTN_OK, NULL);
   fsm.add_transition(&state_ask_toss, &state_manual_toss, BTN_CANCEL, NULL);
-  
-  fsm.add_transition(&state_manual_toss, &state_manual_toss_speler_links, BTN_SCORE_LINKS, NULL);
-  fsm.add_transition(&state_manual_toss, &state_manual_toss_speler_rechts, BTN_SCORE_RECHTS, NULL);
 
-  fsm.add_timed_transition(&state_auto_toss, &state_during_set, 0, NULL);
-  fsm.add_timed_transition(&state_manual_toss_speler_links, &state_during_set, 0, NULL);
-  fsm.add_timed_transition(&state_manual_toss_speler_rechts, &state_during_set, 0, NULL);
+  fsm.add_timed_transition(&state_auto_toss_random_player, &state_during_set, 0, NULL);
 
-  fsm.add_transition(&state_during_set, &state_score_links, BTN_SCORE_LINKS, NULL);
-  fsm.add_transition(&state_during_set, &state_score_rechts, BTN_SCORE_RECHTS, NULL);
+  fsm.add_transition(&state_manual_toss, &state_manual_toss_player_links, BTN_SCORE_LEFT, NULL);
+  fsm.add_transition(&state_manual_toss, &state_manual_toss_player_rechts, BTN_SCORE_RIGHT, NULL);
+
+  fsm.add_timed_transition(&state_manual_toss_player_links, &state_during_set, 0, NULL);
+  fsm.add_timed_transition(&state_manual_toss_player_rechts, &state_during_set, 0, NULL);
+
+  fsm.add_transition(&state_during_set, &state_score_left, BTN_SCORE_LEFT, &push_undo);
+  fsm.add_transition(&state_during_set, &state_score_right, BTN_SCORE_RIGHT, &push_undo);
+  fsm.add_transition(&state_during_set, &state_undo, BTN_CANCEL, NULL);
   fsm.add_transition(&state_during_set, &state_confirm_new_match, BTN_CANCEL_LONGPRESS, NULL);
 
-  fsm.add_transition(&state_confirm_new_set, &state_during_set, BTN_OK, NULL);
+  fsm.add_timed_transition(&state_undo, &state_during_set, 0, NULL);
+  fsm.add_timed_transition(&state_score_left, &state_check_match_rules, 0, NULL);
+  fsm.add_timed_transition(&state_score_right, &state_check_match_rules, 0, NULL);
 
-  fsm.add_timed_transition(&state_score_links, &state_check_spelregels, 0, NULL);
-  fsm.add_timed_transition(&state_score_rechts, &state_check_spelregels, 0, NULL);
+  fsm.add_transition(&state_check_match_rules, &state_during_set, EVT_CONTINUE_SET, NULL);
+  fsm.add_transition(&state_check_match_rules, &state_confirm_new_set, EVT_NEXT_SET, NULL);
+  fsm.add_transition(&state_check_match_rules, &state_swap_sides, EVT_SWAP_SIDES, NULL);
+  fsm.add_transition(&state_check_match_rules, &state_match_complete, EVT_MATCH_COMPLETE, NULL);
 
-  fsm.add_transition(&state_check_spelregels, &state_confirm_new_set, EVT_NEXT_SET, NULL);
-  fsm.add_transition(&state_check_spelregels, &state_change_sides, EVT_CHANGE_SIDES, NULL);
-  fsm.add_transition(&state_check_spelregels, &state_during_set, EVT_CONTINUE_SET, NULL);
-  fsm.add_transition(&state_check_spelregels, &state_match_complete, EVT_MATCH_COMPLETE, NULL);
+  fsm.add_transition(&state_confirm_new_set, &state_swap_sides, BTN_OK, NULL);
+  fsm.add_transition(&state_confirm_new_set, &state_undo, BTN_CANCEL, NULL);
 
-  fsm.add_transition(&state_change_sides, &state_during_set, BTN_OK, NULL);
+  fsm.add_transition(&state_swap_sides, &state_during_set, BTN_OK, NULL);
+  fsm.add_transition(&state_swap_sides, &state_undo, BTN_CANCEL, NULL);
 
   fsm.add_transition(&state_match_complete, &state_new_match, BTN_OK, NULL);
+  fsm.add_transition(&state_match_complete, &state_undo, BTN_CANCEL, NULL);
 
   fsm.add_transition(&state_confirm_new_match, &state_during_set, BTN_CANCEL, NULL);
   fsm.add_transition(&state_confirm_new_match, &state_new_match, BTN_OK, NULL);
@@ -338,43 +429,34 @@ void setup()
 
 void loop(void)
 {
-  //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF); 
-  //displayScrollingLine();  
-  
+  //LowPower.idle(SLEEP_2S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF);
+
   fsm.run_machine();
 
-  switch(DebouncedSwitches.read())
+  switch (DebouncedSwitches.read())
   {
     case MD_UISwitch::KEY_PRESS:
-      Serial.println("key_press");
       fsm.trigger(DebouncedSwitches.getKey());
       break;
     case MD_UISwitch::KEY_LONGPRESS:
-      Serial.println("long_press");
       fsm.trigger(DebouncedSwitches.getKey() | BTN_LONGPRESS);
       break;
   }
 
   if (Serial.available() > 0) {
-    char incoming = Serial.read();
-    switch (incoming) {
-      case '1': fsm.trigger(BTN_SCORE_LINKS); break;
-      case '2': fsm.trigger(BTN_SET_LINKS); break;
-      case '3': fsm.trigger(BTN_SET_RECHTS); break;
-      case '4': fsm.trigger(BTN_SCORE_RECHTS); break;
+    switch (Serial.read()) {
+      case '1': fsm.trigger(BTN_SCORE_LEFT); break;
+      case '2': fsm.trigger(BTN_SET_LEFT); break;
+      case '3': fsm.trigger(BTN_SET_RIGHT); break;
+      case '4': fsm.trigger(BTN_SCORE_RIGHT); break;
       case '5': fsm.trigger(BTN_CANCEL); break;
       case '6': fsm.trigger(BTN_OK); break;
-      case '!': fsm.trigger(BTN_SCORE_LINKS | BTN_LONGPRESS); break;
-      case '@': fsm.trigger(BTN_SET_LINKS | BTN_LONGPRESS); break;
-      case '#': fsm.trigger(BTN_SET_RECHTS | BTN_LONGPRESS); break;
-      case '$': fsm.trigger(BTN_SCORE_RECHTS | BTN_LONGPRESS); break;
+      case '!': fsm.trigger(BTN_SCORE_LEFT | BTN_LONGPRESS); break;
+      case '@': fsm.trigger(BTN_SET_LEFT | BTN_LONGPRESS); break;
+      case '#': fsm.trigger(BTN_SET_RIGHT | BTN_LONGPRESS); break;
+      case '$': fsm.trigger(BTN_SCORE_RIGHT | BTN_LONGPRESS); break;
       case '%': fsm.trigger(BTN_CANCEL | BTN_LONGPRESS); break;
       case '^': fsm.trigger(BTN_OK | BTN_LONGPRESS); break;
     }
   }
 }
-
-
-//void setup() {}
-//void loop() {}
-

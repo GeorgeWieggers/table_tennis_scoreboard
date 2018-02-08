@@ -316,13 +316,14 @@ void HT1632_LedMatrix::senddata (byte chipno, byte address, byte data)
  */
 void HT1632_LedMatrix::sendcol (byte chipno, byte address, byte data)
 {
+	/*
 	Serial.print("sendcol ");
 	Serial.print(chipno, HEX);
 	Serial.print(",");
 	Serial.print(address, HEX);
 	Serial.print(",");
 	Serial.println(data, BIN);
-
+*/
 	
 	
   chipselect(chipno);  // Select chip
@@ -454,6 +455,7 @@ void HT1632_LedMatrix::shiftCursorX(int xinc) {
  */
 void HT1632_LedMatrix::plot (int x, int y, char val)
 {
+	/*
 	Serial.print("Plot ");
 	Serial.print(x);
 	Serial.print(",");
@@ -467,17 +469,20 @@ void HT1632_LedMatrix::plot (int x, int y, char val)
 	Serial.print(numYDevices); Serial.print(",");
 	Serial.print(yMax); Serial.print(",");
 	Serial.println(numDevices);
+	*/
 	
   if (x<0 || x>xMax || y<0 || y>yMax)
      return;
 
   byte chipno = chip_number(x,y);
+  /*
 	Serial.print("Chipno ");
 	Serial.print(x);
 	Serial.print(",");
 	Serial.print(y);
 	Serial.print(",");
 	Serial.println(chipno);
+	*/
   char addr = chip_byte_address(x,y); // compute which memory word this is in
   char shadowAddress = addr >>1;
 
