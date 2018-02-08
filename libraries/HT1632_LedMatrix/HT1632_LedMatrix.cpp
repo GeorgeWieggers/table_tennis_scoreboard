@@ -29,9 +29,9 @@
  */
 
 
-//#define LOWPINS
+#define LOWPINS
 //#define LOWPINS1
-#define HIGHPINS
+//#define HIGHPINS
 
 #ifdef LOWPINS
 // Port D defines for 2-7
@@ -63,13 +63,13 @@ volatile uint8_t* ht1632_cs_DDR[4] = {&DDRD, &DDRD, &DDRD, &DDRD};    // Chip Se
 
 #ifdef HIGHPINS
 // Port B defines for 8-13
-byte ht1632_cs[4] = {8, 9, 10, 11};    // Chip Select (1, 2, 3, or 4)
+byte ht1632_cs[4] = {0, 1, 2, 3};    // Chip Select (1, 2, 3, or 4)
 volatile uint8_t* ht1632_cs_Port[4] = {&PORTB, &PORTB, &PORTB, &PORTB};    // Chip Select (1, 2, 3, or 4)
 volatile uint8_t* ht1632_cs_DDR[4] = {&DDRB, &DDRB, &DDRB, &DDRB};    // Chip Select (1, 2, 3, or 4)
-#define HT1632_DATA     12       // Data pin
+#define HT1632_DATA     4       // Data pin
 #define HT1632_DATA_PORT  PORTB  // Data port
 #define HT1632_DATA_DDR   DDRB   // Data port
-#define HT1632_WRCLK    13       // Write clock pin
+#define HT1632_WRCLK    5       // Write clock pin
 #define HT1632_WRCLK_PORT PORTB  // Write clock port
 #define HT1632_WRCLK_DDR  DDRB   // Write clock port
 
@@ -78,7 +78,7 @@ volatile uint8_t* ht1632_cs_DDR[4] = {&DDRB, &DDRB, &DDRB, &DDRB};    // Chip Se
 // helper macros
 #define output_low(port,pin) port &= ~(1<<pin)
 #define output_high(port,pin) port |= (1<<pin)
-#define chip_number(x,y) (x >> 5) + (y >> 3)*numYDevices
+#define chip_number(x,y) ((x >> 5) + (y >> 3)*numXDevices)
 #define chip_nibble_address(x,y) ((x%32)<<1) + ((y%8)>>2);  
 #define chip_byte_address(x,y) ((x%32)<<1);
 
@@ -316,6 +316,15 @@ void HT1632_LedMatrix::senddata (byte chipno, byte address, byte data)
  */
 void HT1632_LedMatrix::sendcol (byte chipno, byte address, byte data)
 {
+	Serial.print("sendcol ");
+	Serial.print(chipno, HEX);
+	Serial.print(",");
+	Serial.print(address, HEX);
+	Serial.print(",");
+	Serial.println(data, BIN);
+
+	
+	
   chipselect(chipno);  // Select chip
   writebits(HT1632_ID_WR, 0x04);	//1<<2);  // send ID: WRITE to RAM
   writebits(address, 0x40);		//1<<6); // Send address
@@ -329,7 +338,7 @@ void HT1632_LedMatrix::putString(int x, int y, char *str) {
 	cursorY = y;
 	while( *str ) {
 		putChar( cursorX, y, *str++ );
-		cursorX += 6;
+		//cursorX += 6;
 	}
 }
 
@@ -445,10 +454,30 @@ void HT1632_LedMatrix::shiftCursorX(int xinc) {
  */
 void HT1632_LedMatrix::plot (int x, int y, char val)
 {
+	Serial.print("Plot ");
+	Serial.print(x);
+	Serial.print(",");
+	Serial.print(y);
+	Serial.print(",");
+	Serial.println(val, BIN);
+
+	Serial.println("numX,xmax,numY,yMax,numDevices");
+	Serial.print(numXDevices); Serial.print(",");
+	Serial.print(xMax); Serial.print(",");
+	Serial.print(numYDevices); Serial.print(",");
+	Serial.print(yMax); Serial.print(",");
+	Serial.println(numDevices);
+	
   if (x<0 || x>xMax || y<0 || y>yMax)
      return;
 
   byte chipno = chip_number(x,y);
+	Serial.print("Chipno ");
+	Serial.print(x);
+	Serial.print(",");
+	Serial.print(y);
+	Serial.print(",");
+	Serial.println(chipno);
   char addr = chip_byte_address(x,y); // compute which memory word this is in
   char shadowAddress = addr >>1;
 
